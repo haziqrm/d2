@@ -3,62 +3,37 @@ package com.example.coursework1.service;
 import com.example.coursework1.dto.Drone;
 import com.example.coursework1.dto.DroneAvailability;
 import com.example.coursework1.dto.QueryAttribute;
+import com.example.coursework1.repository.DroneRepository;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
-import java.util.Arrays;
 import java.util.List;
 
 @Service
 public class DroneService {
 
-    private final RestTemplate restTemplate = new RestTemplate();
-    private final String ilpEndpoint;
+    private final DroneRepository droneRepository;
 
-    public DroneService(String ilpEndpoint) {
-        if (!ilpEndpoint.endsWith("/")) {
-            ilpEndpoint = ilpEndpoint + "/";
-        }
-        this.ilpEndpoint = ilpEndpoint;
+    public DroneService(DroneRepository droneRepository) {
+        this.droneRepository = droneRepository;
     }
 
     public List<Drone> fetchAllDrones() {
-        String url = ilpEndpoint + "drones";
-
-        Drone[] drones = restTemplate.getForObject(url, Drone[].class);
-
-        if (drones == null) {
-            return List.of();
-        }
-
-        return Arrays.asList(drones);
+        return droneRepository.fetchAllDrones();
     }
 
     public List<DroneAvailability> fetchDroneAvailability() {
-        String url = ilpEndpoint + "drone-availability";
-
-        try {
-            DroneAvailability[] availability = restTemplate.getForObject(url, DroneAvailability[].class);
-
-            if (availability == null) {
-                return List.of();
-            }
-
-            return Arrays.asList(availability);
-        } catch (Exception e) {
-            return List.of();
-        }
+        return droneRepository.fetchDroneAvailability();
     }
 
-    public Drone getDroneById(int id) {
+    public Drone getDroneById(String id) {
         return fetchAllDrones()
                 .stream()
-                .filter(d -> d.getId() == id)
+                .filter(d -> d.getId() != null && d.getId().equals(id))
                 .findFirst()
                 .orElse(null);
     }
 
-    public List<Integer> dronesWithCooling(boolean state) {
+    public List<String> dronesWithCooling(boolean state) {
         return fetchAllDrones()
                 .stream()
                 .filter(d -> d.isCooling() == state)
@@ -66,14 +41,14 @@ public class DroneService {
                 .toList();
     }
 
-    public List<Integer> queryAsPath(String attribute, String value) {
+    public List<String> queryAsPath(String attribute, String value) {
         return fetchAllDrones().stream()
                 .filter(d -> matches(d, attribute, "=", value))
                 .map(Drone::getId)
                 .toList();
     }
 
-    public List<Integer> query(List<QueryAttribute> filters) {
+    public List<String> query(List<QueryAttribute> filters) {
         return fetchAllDrones().stream()
                 .filter(drone ->
                         filters.stream().allMatch(f ->
@@ -89,11 +64,13 @@ public class DroneService {
 
         if (value == null) return false;
 
+        // String comparison (equality only)
         if (!(value instanceof Number)) {
             return operator.equals("=") &&
                     value.toString().equalsIgnoreCase(rawValue);
         }
 
+        // Numerical comparison (supports <, >, =, !=)
         double droneVal = ((Number) value).doubleValue();
         double queryVal;
 
@@ -113,19 +90,21 @@ public class DroneService {
     }
 
     private Object extractAttributeValue(Drone d, String attribute) {
-
-        switch (attribute.toLowerCase()) {
-            case "id": return d.getId();
-            case "name": return d.getName();
-            case "capacity": return d.getCapability().getCapacity();
-            case "cooling": return d.getCapability().isCooling();
-            case "heating": return d.getCapability().isHeating();
-            case "maxmoves": return d.getCapability().getMaxMoves();
-            case "costpermove": return d.getCapability().getCostPerMove();
-            case "costinitial": return d.getCapability().getCostInitial();
-            case "costfinal": return d.getCapability().getCostFinal();
-
-            default: return null;
+        if (d == null || d.getCapability() == null) {
+            return null;
         }
+
+        return switch (attribute.toLowerCase()) {
+            case "id" -> d.getId();
+            case "name" -> d.getName();
+            case "capacity" -> d.getCapability().getCapacity();
+            case "cooling" -> d.getCapability().isCooling();
+            case "heating" -> d.getCapability().isHeating();
+            case "maxmoves" -> d.getCapability().getMaxMoves();
+            case "costpermove" -> d.getCapability().getCostPerMove();
+            case "costinitial" -> d.getCapability().getCostInitial();
+            case "costfinal" -> d.getCapability().getCostFinal();
+            default -> null;
+        };
     }
 }

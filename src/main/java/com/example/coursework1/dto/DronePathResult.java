@@ -4,19 +4,19 @@ import java.util.List;
 
 public class DronePathResult {
 
-    private int droneId;
+    private String droneId;  // Changed to String
     private List<DeliveryResult> deliveries;
 
     public DronePathResult() {}
 
-    public DronePathResult(int droneId, List<DeliveryResult> deliveries) {
+    public DronePathResult(String droneId, List<DeliveryResult> deliveries) {
         this.droneId = droneId;
         this.deliveries = deliveries;
     }
 
-    public int getDroneId() { return droneId; }
+    public String getDroneId() { return droneId; }
     public List<DeliveryResult> getDeliveries() { return deliveries; }
 
-    public void setDroneId(int droneId) { this.droneId = droneId; }
+    public void setDroneId(String droneId) { this.droneId = droneId; }
     public void setDeliveries(List<DeliveryResult> deliveries) { this.deliveries = deliveries; }
 }

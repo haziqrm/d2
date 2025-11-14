@@ -4,59 +4,33 @@ import com.example.coursework1.dto.Region;
 import com.example.coursework1.dto.RegionRequest;
 import com.example.coursework1.model.Position;
 import com.example.coursework1.model.RestrictedArea;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.ResponseEntity;
+import com.example.coursework1.repository.RestrictedAreaRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
-import java.util.ArrayList;
 import java.util.List;
 
 @Service
 public class RestrictedAreaService {
 
-    private final String ilpEndpoint;
+    private static final Logger logger = LoggerFactory.getLogger(RestrictedAreaService.class);
+
+    private final RestrictedAreaRepository restrictedAreaRepository;
     private final RegionService regionService;
-    private final RestTemplate restTemplate;
 
-    // Cache restricted areas to avoid repeated API calls
-    private List<RestrictedArea> cachedRestrictedAreas = null;
-
-    @Autowired
-    public RestrictedAreaService(String ilpEndpoint,
-                                 RegionService regionService,
-                                 RestTemplate restTemplate) {
-        this.ilpEndpoint = ilpEndpoint;
+    public RestrictedAreaService(RestrictedAreaRepository restrictedAreaRepository,
+                                 RegionService regionService) {
+        this.restrictedAreaRepository = restrictedAreaRepository;
         this.regionService = regionService;
-        this.restTemplate = restTemplate;
-    }
-
-    public List<RestrictedArea> fetchRestrictedAreas() {
-        if (cachedRestrictedAreas != null) {
-            return cachedRestrictedAreas;
-        }
-
-        try {
-            String url = ilpEndpoint + "/restricted-areas";
-            ResponseEntity<List<RestrictedArea>> response = restTemplate.exchange(
-                    url,
-                    HttpMethod.GET,
-                    null,
-                    new ParameterizedTypeReference<List<RestrictedArea>>() {}
-            );
-
-            cachedRestrictedAreas = response.getBody();
-            return cachedRestrictedAreas != null ? cachedRestrictedAreas : new ArrayList<>();
-        } catch (Exception e) {
-            System.err.println("Failed to fetch restricted areas: " + e.getMessage());
-            return new ArrayList<>();
-        }
     }
 
     public boolean isInRestrictedArea(Position position) {
-        List<RestrictedArea> areas = fetchRestrictedAreas();
+        if (position == null) {
+            return false;
+        }
+
+        List<RestrictedArea> areas = restrictedAreaRepository.fetchRestrictedAreas();
 
         for (RestrictedArea area : areas) {
             if (area.getVertices() == null || area.getVertices().isEmpty()) {
@@ -66,8 +40,13 @@ public class RestrictedAreaService {
             Region region = new Region(area.getName(), area.getVertices());
             RegionRequest request = new RegionRequest(position, region);
 
-            if (regionService.isInRegion(request)) {
-                return true;
+            try {
+                if (regionService.isInRegion(request)) {
+                    logger.debug("Position {} is in restricted area: {}", position, area.getName());
+                    return true;
+                }
+            } catch (Exception e) {
+                logger.warn("Error checking if position is in area {}: {}", area.getName(), e.getMessage());
             }
         }
 
@@ -113,9 +92,8 @@ public class RestrictedAreaService {
     }
 
     public String getRestrictedAreaNameForPath(Position from, Position to) {
-        List<RestrictedArea> areas = fetchRestrictedAreas();
+        List<RestrictedArea> areas = restrictedAreaRepository.fetchRestrictedAreas();
 
-        // Sample points along the path
         int samples = 20;
         for (int i = 0; i <= samples; i++) {
             double t = (double) i / samples;
@@ -132,8 +110,12 @@ public class RestrictedAreaService {
                 Region region = new Region(area.getName(), area.getVertices());
                 RegionRequest request = new RegionRequest(point, region);
 
-                if (regionService.isInRegion(request)) {
-                    return area.getName();
+                try {
+                    if (regionService.isInRegion(request)) {
+                        return area.getName();
+                    }
+                } catch (Exception e) {
+                    logger.warn("Error checking area {}: {}", area.getName(), e.getMessage());
                 }
             }
         }
@@ -141,13 +123,13 @@ public class RestrictedAreaService {
         return null;
     }
 
-    public void clearCache() {
-        cachedRestrictedAreas = null;
-    }
-
     public List<String> getRestrictedAreaNames() {
-        return fetchRestrictedAreas().stream()
+        return restrictedAreaRepository.fetchRestrictedAreas().stream()
                 .map(RestrictedArea::getName)
                 .toList();
+    }
+
+    public void clearCache() {
+        restrictedAreaRepository.clearCache();
     }
 }

@@ -8,7 +8,6 @@ import java.util.List;
 
 @Service
 public class GeoJsonService {
-
     private final DeliveryPlannerService deliveryPlannerService;
 
     public GeoJsonService(DeliveryPlannerService deliveryPlannerService) {
@@ -38,7 +37,6 @@ public class GeoJsonService {
         }
 
         GeoJsonResponse geoJson = new GeoJsonResponse(coordinates);
-
         geoJson.getProperties().put("totalMoves", result.getTotalMoves());
         geoJson.getProperties().put("totalCost", result.getTotalCost());
         geoJson.getProperties().put("deliveryCount",

@@ -21,7 +21,7 @@ public class DroneAvailabilityService {
         this.droneService = droneService;
     }
 
-    public List<Integer> queryAvailableDrones(List<MedDispatchRec> dispatches) {
+    public List<String> queryAvailableDrones(List<MedDispatchRec> dispatches) {
         if (dispatches == null || dispatches.isEmpty()) {
             return List.of();
         }
@@ -37,14 +37,14 @@ public class DroneAvailabilityService {
         List<Drone> allDrones = droneService.fetchAllDrones();
         List<DroneAvailability> availabilityList = droneService.fetchDroneAvailability();
 
-        Map<Integer, DroneAvailability> availabilityMap = availabilityList.stream()
+        Map<String, DroneAvailability> availabilityMap = availabilityList.stream()
                 .collect(Collectors.toMap(
                         DroneAvailability::getDroneId,
                         a -> a,
                         (a, b) -> a
                 ));
 
-        List<Integer> availableDroneIds = new ArrayList<>();
+        List<String> availableDroneIds = new ArrayList<>();
 
         for (Drone drone : allDrones) {
             if (canHandleAllDispatches(drone, validDispatches, availabilityMap)) {
@@ -56,7 +56,7 @@ public class DroneAvailabilityService {
     }
 
     private boolean canHandleAllDispatches(Drone drone, List<MedDispatchRec> dispatches,
-                                           Map<Integer, DroneAvailability> availabilityMap) {
+                                           Map<String, DroneAvailability> availabilityMap) {
         if (drone == null || drone.getCapability() == null) {
             return false;
         }
@@ -70,6 +70,7 @@ public class DroneAvailabilityService {
                 return false;
             }
 
+            // Check cooling requirement
             if (req.isCooling() && !capability.isCooling()) {
                 return false;
             }
@@ -93,8 +94,8 @@ public class DroneAvailabilityService {
         return true;
     }
 
-    private boolean isAvailableForDispatch(int droneId, MedDispatchRec dispatch,
-                                           Map<Integer, DroneAvailability> availabilityMap) {
+    private boolean isAvailableForDispatch(String droneId, MedDispatchRec dispatch,
+                                           Map<String, DroneAvailability> availabilityMap) {
         if (dispatch.getDate() == null || dispatch.getTime() == null) {
             return true;
         }

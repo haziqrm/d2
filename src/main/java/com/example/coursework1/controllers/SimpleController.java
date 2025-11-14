@@ -67,13 +67,13 @@ public class SimpleController {
     }
 
     @GetMapping("/dronesWithCooling/{state}")
-    public ResponseEntity<List<Integer>> dronesWithCooling(@PathVariable boolean state) {
-        List<Integer> ids = droneService.dronesWithCooling(state);
+    public ResponseEntity<List<String>> dronesWithCooling(@PathVariable boolean state) {
+        List<String> ids = droneService.dronesWithCooling(state);
         return ResponseEntity.ok(ids);
     }
 
     @GetMapping("/droneDetails/{id}")
-    public ResponseEntity<?> droneDetails(@PathVariable int id) {
+    public ResponseEntity<?> droneDetails(@PathVariable String id) {
         Drone drone = droneService.getDroneById(id);
 
         if (drone == null) {
@@ -84,7 +84,7 @@ public class SimpleController {
     }
 
     @GetMapping("/queryAsPath/{attribute}/{value}")
-    public ResponseEntity<List<Integer>> queryAsPath(
+    public ResponseEntity<List<String>> queryAsPath(
             @PathVariable String attribute,
             @PathVariable String value
     ) {
@@ -92,16 +92,16 @@ public class SimpleController {
     }
 
     @PostMapping("/query")
-    public ResponseEntity<List<Integer>> query(
+    public ResponseEntity<List<String>> query(
             @RequestBody List<QueryAttribute> filters
     ) {
         return ResponseEntity.ok(droneService.query(filters));
     }
 
     @PostMapping("/queryAvailableDrones")
-    public ResponseEntity<List<Integer>> queryAvailableDrones(
+    public ResponseEntity<List<String>> queryAvailableDrones(
             @RequestBody List<MedDispatchRec> dispatches) {
-        List<Integer> availableDrones = droneAvailabilityService.queryAvailableDrones(dispatches);
+        List<String> availableDrones = droneAvailabilityService.queryAvailableDrones(dispatches);
         return ResponseEntity.ok(availableDrones);
     }
 

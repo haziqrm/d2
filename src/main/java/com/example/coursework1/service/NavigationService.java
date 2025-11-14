@@ -9,20 +9,18 @@ public class NavigationService {
 
     private static final double STEP = 0.00015;
     private static final double ANGLE_INCREMENT = 22.5;
-
-    private static final double TOLERANCE = 1e-9; // Tolerance for floating point numbers
+    private static final double TOLERANCE = 1e-9;
 
     public Position calculateNextPosition(NextPositionRequest request) {
-        double angleRad = Math.toRadians(request.getAngle());
-        double deltaLng = STEP * Math.cos(angleRad);
-        double deltaLat = STEP * Math.sin(angleRad);
-
         double angle = request.getAngle();
 
-        // Check if angle is multiple of 22.5
         if (!isMultipleOf(angle, ANGLE_INCREMENT)) {
             throw new IllegalArgumentException("Angle must be a multiple of 22.5 degrees");
         }
+
+        double angleRad = Math.toRadians(angle);
+        double deltaLng = STEP * Math.cos(angleRad);
+        double deltaLat = STEP * Math.sin(angleRad);
 
         return new Position(
                 request.getStart().getLng() + deltaLng,

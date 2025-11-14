@@ -2,6 +2,8 @@ package com.example.coursework1.service;
 
 import com.example.coursework1.dto.*;
 import com.example.coursework1.model.Position;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -9,6 +11,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class DeliveryPlannerService {
+
+    private static final Logger logger = LoggerFactory.getLogger(DeliveryPlannerService.class);
 
     private final DroneService droneService;
     private final ServicePointService servicePointService;
@@ -28,6 +32,9 @@ public class DeliveryPlannerService {
     }
 
     public CalcDeliveryResult calcDeliveryPath(List<MedDispatchRec> dispatches) {
+        logger.info("Calculating delivery path for {} dispatches",
+                dispatches != null ? dispatches.size() : 0);
+
         List<MedDispatchRec> originalList = dispatches == null ? List.of() : new ArrayList<>(dispatches);
 
         Map<Integer, MedDispatchRec> originalById = originalList.stream()
@@ -36,19 +43,21 @@ public class DeliveryPlannerService {
                 .collect(Collectors.toMap(MedDispatchRec::getId, d -> d, (a, b) -> a));
 
         List<MedDispatchRec> pending = originalList.stream()
-                .filter(d -> d != null && d.getId() != null && d.getRequirements() != null && d.getDelivery() != null)
+                .filter(d -> d != null && d.getId() != null &&
+                        d.getRequirements() != null && d.getDelivery() != null)
                 .collect(Collectors.toCollection(ArrayList::new));
 
         List<Drone> drones = Optional.ofNullable(droneService.fetchAllDrones()).orElse(List.of());
         List<ServicePoint> servicePoints = Optional.ofNullable(servicePointService.fetchAllServicePoints()).orElse(List.of());
 
-        Position defaultBase = servicePoints.isEmpty() ? new Position(0.0, 0.0) : safeGetPosition(servicePoints.get(0));
+        Position defaultBase = servicePoints.isEmpty() ?
+                new Position(0.0, 0.0) : safeGetPosition(servicePoints.get(0));
 
         double totalCost = 0.0;
         int totalMoves = 0;
         List<DronePathResult> dronePaths = new ArrayList<>();
 
-        Map<Integer, Position> droneHome = new HashMap<>();
+        Map<String, Position> droneHome = new HashMap<>();
         for (Drone d : drones) {
             droneHome.put(d.getId(), pickHomeForDrone(servicePoints, defaultBase));
         }
@@ -81,22 +90,19 @@ public class DeliveryPlannerService {
 
                 Position dest = next.getDelivery();
 
-                // Check if destination is in restricted area
                 if (isInNoFly(dest)) {
                     candidates.remove(next);
                     continue;
                 }
 
-                // Try to build path avoiding restricted areas
                 List<LngLat> pathToDest = buildPathAvoidingRestrictions(current, dest);
 
-                // If no valid path found, skip this delivery
                 if (pathToDest == null || pathToDest.isEmpty()) {
                     candidates.remove(next);
                     continue;
                 }
 
-                int toDest = pathToDest.size() - 1; // Actual moves in the path
+                int toDest = pathToDest.size() - 1;
                 int back = estimateStepsBack(dest, base);
 
                 if (toDest + back > movesLeft) {
@@ -104,7 +110,7 @@ public class DeliveryPlannerService {
                     continue;
                 }
 
-                // Add hover indicator (duplicate last position)
+                // Add hover indicator
                 if (!pathToDest.isEmpty()) {
                     LngLat last = pathToDest.get(pathToDest.size() - 1);
                     pathToDest.add(new LngLat(last.getLng(), last.getLat()));
@@ -133,8 +139,6 @@ public class DeliveryPlannerService {
                     MedDispatchRec original = originalById.get(last.getDeliveryId());
                     if (original != null) {
                         pending.add(original);
-                    } else {
-                        pending.add(new MedDispatchRec(last.getDeliveryId(), null, null, null, new Position(0.0, 0.0)));
                     }
 
                     current = assigned.isEmpty() ? base : lastDeliveryPosition(assigned.get(assigned.size() - 1));
@@ -169,6 +173,9 @@ public class DeliveryPlannerService {
             }
         }
 
+        logger.info("Delivery planning complete: {} drones used, {} total moves, ${} total cost",
+                dronePaths.size(), totalMoves, totalCost);
+
         return new CalcDeliveryResult(totalCost, totalMoves, dronePaths);
     }
 
@@ -185,7 +192,6 @@ public class DeliveryPlannerService {
             iterations++;
 
             double targetAngle = calculateAngle(current, to);
-
             Position nextDirect = moveInDirection(current, targetAngle);
 
             if (!pathSegmentCrossesRestriction(current, nextDirect)) {
@@ -221,7 +227,6 @@ public class DeliveryPlannerService {
             Position testPos = moveInDirection(current, testAngle);
 
             if (!pathSegmentCrossesRestriction(current, testPos)) {
-
                 double distBefore = dist(current, target);
                 double distAfter = dist(testPos, target);
 
@@ -318,12 +323,6 @@ public class DeliveryPlannerService {
         double dx = a.getLng() - b.getLng();
         double dy = a.getLat() - b.getLat();
         return Math.sqrt(dx * dx + dy * dy);
-    }
-
-    private int stepsBetween(Position a, Position b) {
-        double d = dist(a, b);
-        if (Double.isInfinite(d)) return Integer.MAX_VALUE;
-        return (int) Math.ceil(d / STEP);
     }
 
     private Position lastDeliveryPosition(DeliveryResult r) {

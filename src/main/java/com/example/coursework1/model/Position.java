@@ -36,4 +36,9 @@ public class Position {
     public int hashCode() {
         return Objects.hash(lng, lat);
     }
+
+    @Override
+    public String toString() {
+        return String.format("Position(%.6f, %.6f)", lng, lat);
+    }
 }

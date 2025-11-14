@@ -16,13 +16,21 @@ public class ServicePoint {
         public double getLng() { return lng; }
         public double getLat() { return lat; }
         public double getAlt() { return alt; }
+
+        public void setLng(double lng) { this.lng = lng; }
+        public void setLat(double lat) { this.lat = lat; }
+        public void setAlt(double alt) { this.alt = alt; }
     }
 
     public int getId() { return id; }
     public String getName() { return name; }
     public Location getLocation() { return location; }
 
+    public void setId(int id) { this.id = id; }
+    public void setName(String name) { this.name = name; }
+    public void setLocation(Location location) { this.location = location; }
+
     public Position getPosition() {
-        return new Position(location.lng, location.lat);
+        return location != null ? new Position(location.lng, location.lat) : null;
     }
 }
