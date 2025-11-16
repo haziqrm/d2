@@ -1,8 +1,8 @@
 package com.example.coursework1.service;
 
 import com.example.coursework1.dto.Drone;
-import com.example.coursework1.dto.DroneAvailability;
 import com.example.coursework1.dto.QueryAttribute;
+import com.example.coursework1.dto.ServicePointDrones;
 import com.example.coursework1.repository.DroneRepository;
 import org.springframework.stereotype.Service;
 
@@ -21,8 +21,11 @@ public class DroneService {
         return droneRepository.fetchAllDrones();
     }
 
-    public List<DroneAvailability> fetchDroneAvailability() {
-        return droneRepository.fetchDroneAvailability();
+    /**
+     * Fetch drone availability organized by service point
+     */
+    public List<ServicePointDrones> fetchDronesForServicePoints() {
+        return droneRepository.fetchDronesForServicePoints();
     }
 
     public Drone getDroneById(String id) {

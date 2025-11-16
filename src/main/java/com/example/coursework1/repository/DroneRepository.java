@@ -1,9 +1,12 @@
 package com.example.coursework1.repository;
 
 import com.example.coursework1.dto.Drone;
-import com.example.coursework1.dto.DroneAvailability;
+import com.example.coursework1.dto.ServicePointDrones;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Repository;
 import org.springframework.web.client.RestTemplate;
 
@@ -42,22 +45,38 @@ public class DroneRepository {
         }
     }
 
-    public List<DroneAvailability> fetchDroneAvailability() {
+    /**
+     * Fetch drone availability organized by service point
+     * Endpoint: /drones-for-service-points
+     */
+    public List<ServicePointDrones> fetchDronesForServicePoints() {
         try {
-            String url = ilpEndpoint + "drone-availability";
-            logger.debug("Fetching drone availability from: {}", url);
+            String url = ilpEndpoint + "drones-for-service-points";
+            logger.debug("Fetching drones-for-service-points from: {}", url);
 
-            DroneAvailability[] availability = restTemplate.getForObject(url, DroneAvailability[].class);
+            ResponseEntity<List<ServicePointDrones>> response = restTemplate.exchange(
+                    url,
+                    HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<List<ServicePointDrones>>() {}
+            );
 
-            if (availability == null) {
-                logger.warn("Received null availability array from ILP service");
+            List<ServicePointDrones> data = response.getBody();
+
+            if (data == null) {
+                logger.warn("Received null drones-for-service-points from ILP service");
                 return List.of();
             }
 
-            logger.info("Successfully fetched availability for {} drones", availability.length);
-            return Arrays.asList(availability);
+            int totalDrones = data.stream()
+                    .mapToInt(sp -> sp.getDrones() != null ? sp.getDrones().size() : 0)
+                    .sum();
+
+            logger.info("Successfully fetched {} service points with {} total drones",
+                    data.size(), totalDrones);
+            return data;
         } catch (Exception e) {
-            logger.error("Failed to fetch drone availability from ILP service", e);
+            logger.error("Failed to fetch drones-for-service-points from ILP service", e);
             return List.of();
         }
     }
