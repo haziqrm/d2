@@ -17,12 +17,12 @@ public class DeliveryPlannerService {
     private final DroneService droneService;
     private final ServicePointService servicePointService;
     private final RestrictedAreaService restrictedAreaService;
+    private final DroneAvailabilityService droneAvailabilityService;
 
     private static final double STEP = 0.00015;
     private static final double ANGLE_INCREMENT = 22.5;
     private static final double EPS = 1e-12;
     private static final int MAX_PATH_ITERATIONS = 20000;
-    private final DroneAvailabilityService droneAvailabilityService;
 
     public DeliveryPlannerService(DroneService droneService,
                                   ServicePointService servicePointService,
@@ -56,8 +56,6 @@ public class DeliveryPlannerService {
         double totalCost = 0.0;
         int totalMoves = 0;
         List<DronePathResult> dronePaths = new ArrayList<>();
-
-        drones.sort(Comparator.comparingDouble((Drone dr) -> -safeGetCapabilityCapacity(dr)));
 
         List<String> availableDroneIds = droneAvailabilityService.queryAvailableDrones(pending);
         Set<String> availableSet = new HashSet<>(availableDroneIds);
@@ -103,7 +101,6 @@ public class DeliveryPlannerService {
                         next.getId(), current.getLng(), current.getLat(),
                         dest.getLng(), dest.getLat());
 
-                // Check if destination is in restricted area
                 if (isInNoFly(dest)) {
                     logger.warn("Delivery {} destination is in restricted area - SKIPPING",
                             next.getId());
@@ -112,7 +109,6 @@ public class DeliveryPlannerService {
                     continue;
                 }
 
-                // Build path to destination
                 List<LngLat> pathToDest = buildPathAvoidingRestrictions(current, dest);
 
                 if (pathToDest == null || pathToDest.isEmpty()) {
@@ -137,9 +133,8 @@ public class DeliveryPlannerService {
                     continue;
                 }
 
-                // Add hover at delivery location (2 identical points)
-                LngLat last = pathToDest.get(pathToDest.size() - 1);
-                pathToDest.add(new LngLat(last.getLng(), last.getLat()));
+                // Add hover at EXACT delivery location (2 identical points)
+                pathToDest.add(new LngLat(dest.getLng(), dest.getLat()));
 
                 movesLeft -= toDest;
                 usedMovesThisFlight += toDest;
@@ -156,7 +151,6 @@ public class DeliveryPlannerService {
 
             if (assigned.isEmpty()) continue;
 
-            // Build return path
             List<LngLat> returnPath = buildPathAvoidingRestrictions(current, base);
             if (returnPath == null) {
                 returnPath = buildPathWithRelaxedConstraints(current, base);
@@ -170,7 +164,6 @@ public class DeliveryPlannerService {
                 continue;
             }
 
-            // Append return path to last delivery
             if (!assigned.isEmpty() && returnPath != null) {
                 DeliveryResult lastDelivery = assigned.get(assigned.size() - 1);
                 List<LngLat> lastPath = new ArrayList<>(lastDelivery.getFlightPath());
@@ -242,12 +235,15 @@ public class DeliveryPlannerService {
             }
         }
 
-        if (!isCloseEnough(current, to)) {
-            logger.warn("Pathfinding didn't reach destination after {} iterations", iterations);
+        // ALWAYS add exact destination coordinates as final point
+        LngLat lastPoint = path.get(path.size() - 1);
+        if (Math.abs(lastPoint.getLng() - to.getLng()) > EPS ||
+                Math.abs(lastPoint.getLat() - to.getLat()) > EPS) {
             path.add(new LngLat(to.getLng(), to.getLat()));
         }
 
-        logger.debug("Path built with {} steps", path.size());
+        logger.debug("Path built with {} steps, ending at exact destination ({}, {})",
+                path.size(), to.getLng(), to.getLat());
         return path;
     }
 
@@ -299,11 +295,15 @@ public class DeliveryPlannerService {
             }
         }
 
-        if (!isCloseEnough(current, to)) {
+        // ALWAYS add exact destination coordinates as final point
+        LngLat lastPoint = path.get(path.size() - 1);
+        if (Math.abs(lastPoint.getLng() - to.getLng()) > EPS ||
+                Math.abs(lastPoint.getLat() - to.getLat()) > EPS) {
             path.add(new LngLat(to.getLng(), to.getLat()));
         }
 
-        logger.debug("Relaxed pathfinding succeeded with {} steps", path.size());
+        logger.debug("Relaxed pathfinding succeeded with {} steps, ending at exact destination ({}, {})",
+                path.size(), to.getLng(), to.getLat());
         return path;
     }
 
@@ -425,13 +425,6 @@ public class DeliveryPlannerService {
         double d = dist(from, to);
         if (Double.isInfinite(d)) return Integer.MAX_VALUE;
         return (int) Math.ceil(d / STEP);
-    }
-
-    private Position pickHomeForDrone(List<ServicePoint> sps, Position fallback) {
-        if (sps == null || sps.isEmpty()) return fallback;
-        ServicePoint sp = sps.get(0);
-        Position p = safeGetPosition(sp);
-        return p == null ? fallback : p;
     }
 
     private Position safeGetPosition(ServicePoint sp) {
