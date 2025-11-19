@@ -107,21 +107,18 @@ public class DroneAvailabilityService {
                 return false;
             }
 
-            // Check 2: Cooling
             if (req.isCooling() && !capability.isCooling()) {
                 logger.trace("Drone {} failed cooling check for dispatch {}",
                         drone.getId(), dispatch.getId());
                 return false;
             }
 
-            // Check 3: Heating
             if (req.isHeating() && !capability.isHeating()) {
                 logger.trace("Drone {} failed heating check for dispatch {}",
                         drone.getId(), dispatch.getId());
                 return false;
             }
 
-            // Check 4: Date/Time Availability
             if (!isAvailableForDispatch(drone.getId(), dispatch, availabilityMap)) {
                 logger.trace("Drone {} failed availability check for dispatch {} ({} at {})",
                         drone.getId(), dispatch.getId(),
@@ -129,7 +126,6 @@ public class DroneAvailabilityService {
                 return false;
             }
 
-            // Check 5: Cost (if specified)
             if (req.getMaxCost() != null) {
                 double minCost = capability.getCostInitial() + capability.getCostFinal();
                 if (minCost > req.getMaxCost()) {
@@ -140,29 +136,24 @@ public class DroneAvailabilityService {
             }
         }
 
-        // All dispatches passed all checks
         return true;
     }
 
     private boolean isAvailableForDispatch(String droneId, MedDispatchRec dispatch,
                                            Map<String, List<TimeWindow>> availabilityMap) {
-        // If no date/time specified, assume available (per spec)
         if (dispatch.getDate() == null || dispatch.getTime() == null) {
             return true;
         }
 
-        // Get availability windows for this drone
         List<TimeWindow> windows = availabilityMap.get(droneId);
         if (windows == null || windows.isEmpty()) {
-            // No availability data - assume available
             return true;
         }
 
         try {
-            // Parse dispatch date and time
             LocalDate date = LocalDate.parse(dispatch.getDate());
             DayOfWeek dayOfWeek = date.getDayOfWeek();
-            String dayName = dayOfWeek.toString(); // "MONDAY", "TUESDAY", etc.
+            String dayName = dayOfWeek.toString();
 
             LocalTime dispatchTime = parseTime(dispatch.getTime());
             if (dispatchTime == null) {
@@ -171,14 +162,12 @@ public class DroneAvailabilityService {
                 return true;
             }
 
-            // Check if dispatch matches ANY time window
             for (TimeWindow window : windows) {
                 if (isInTimeWindow(dayName, dispatchTime, window)) {
                     return true;
                 }
             }
 
-            // No matching window found
             return false;
 
         } catch (DateTimeParseException e) {
@@ -211,17 +200,16 @@ public class DroneAvailabilityService {
         }
 
         DateTimeFormatter[] formatters = {
-                DateTimeFormatter.ofPattern("HH:mm:ss"),   // "14:30:00" (API format)
-                DateTimeFormatter.ofPattern("H:mm:ss"),    // "9:30:00"
-                DateTimeFormatter.ofPattern("HH:mm"),      // "14:30"
-                DateTimeFormatter.ofPattern("H:mm")        // "9:30"
+                DateTimeFormatter.ofPattern("HH:mm:ss"),
+                DateTimeFormatter.ofPattern("H:mm:ss"),
+                DateTimeFormatter.ofPattern("HH:mm"),
+                DateTimeFormatter.ofPattern("H:mm")
         };
 
         for (DateTimeFormatter formatter : formatters) {
             try {
                 return LocalTime.parse(timeStr, formatter);
             } catch (DateTimeParseException e) {
-                // Try next formatter
             }
         }
 

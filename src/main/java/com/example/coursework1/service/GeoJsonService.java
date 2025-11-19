@@ -1,6 +1,8 @@
 package com.example.coursework1.service;
 
 import com.example.coursework1.dto.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -8,6 +10,8 @@ import java.util.List;
 
 @Service
 public class GeoJsonService {
+
+    private static final Logger logger = LoggerFactory.getLogger(GeoJsonService.class);
     private final DeliveryPlannerService deliveryPlannerService;
 
     public GeoJsonService(DeliveryPlannerService deliveryPlannerService) {
@@ -16,20 +20,18 @@ public class GeoJsonService {
 
     public GeoJsonResponse calcDeliveryPathAsGeoJson(List<MedDispatchRec> dispatches) {
         CalcDeliveryResult result = deliveryPlannerService.calcDeliveryPath(dispatches);
+
         List<double[]> coordinates = new ArrayList<>();
-
-        if (result.getDronePaths() != null && !result.getDronePaths().isEmpty()) {
+        if (result.getDronePaths() == null || result.getDronePaths().isEmpty()) {
+            logger.warn("No drone paths found for GeoJSON generation");
+            coordinates.add(new double[]{0.0, 0.0});
+        } else if (result.getDronePaths().size() > 1) {
+            logger.warn("calcDeliveryPathAsGeoJson called but {} drones were needed (should be 1)",
+                    result.getDronePaths().size());
+            extractPathFromDrone(result.getDronePaths().get(0), coordinates);
+        } else {
             DronePathResult dronePath = result.getDronePaths().get(0);
-
-            if (dronePath.getDeliveries() != null) {
-                for (DeliveryResult delivery : dronePath.getDeliveries()) {
-                    if (delivery.getFlightPath() != null) {
-                        for (LngLat point : delivery.getFlightPath()) {
-                            coordinates.add(new double[]{point.getLng(), point.getLat()});
-                        }
-                    }
-                }
-            }
+            extractPathFromDrone(dronePath, coordinates);
         }
 
         if (coordinates.isEmpty()) {
@@ -42,7 +44,20 @@ public class GeoJsonService {
         geoJson.getProperties().put("deliveryCount",
                 result.getDronePaths().isEmpty() ? 0 :
                         result.getDronePaths().get(0).getDeliveries().size());
+        geoJson.getProperties().put("droneCount", result.getDronePaths().size());
 
         return geoJson;
+    }
+
+    private void extractPathFromDrone(DronePathResult dronePath, List<double[]> coordinates) {
+        if (dronePath.getDeliveries() != null) {
+            for (DeliveryResult delivery : dronePath.getDeliveries()) {
+                if (delivery.getFlightPath() != null) {
+                    for (LngLat point : delivery.getFlightPath()) {
+                        coordinates.add(new double[]{point.getLng(), point.getLat()});
+                    }
+                }
+            }
+        }
     }
 }

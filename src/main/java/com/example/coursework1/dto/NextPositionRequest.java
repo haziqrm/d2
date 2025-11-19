@@ -2,6 +2,8 @@ package com.example.coursework1.dto;
 
 import com.example.coursework1.model.Position;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 public class NextPositionRequest {
@@ -11,6 +13,8 @@ public class NextPositionRequest {
     private Position start;
 
     @NotNull(message = "angle must not be null")
+    @Min(value = -180, message = "Angle must be between -180 and 180")
+    @Max(value = 180, message = "Angle must be between -180 and 180")
     private Double angle;
 
     public NextPositionRequest() { }

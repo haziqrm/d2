@@ -57,17 +57,13 @@ public class DeliveryPlannerService {
         int totalMoves = 0;
         List<DronePathResult> dronePaths = new ArrayList<>();
 
-        List<String> availableDroneIds = droneAvailabilityService.queryAvailableDrones(pending);
-        Set<String> availableSet = new HashSet<>(availableDroneIds);
-
-        logger.info("Available drones for all dispatches: {}", availableDroneIds);
-
+        // REMOVED: Upfront availability filtering that used AND logic
+        // Instead, we sort by capacity and check availability per-dispatch
         drones = drones.stream()
-                .filter(d -> availableSet.contains(d.getId()))
                 .sorted(Comparator.comparingDouble((Drone dr) -> -safeGetCapabilityCapacity(dr)))
                 .toList();
 
-        logger.info("Using {} available drones", drones.size());
+        logger.info("Processing with {} total drones", drones.size());
 
         for (Drone drone : drones) {
             if (pending.isEmpty()) break;
@@ -76,115 +72,172 @@ public class DeliveryPlannerService {
             if (cap == null) continue;
 
             Position base = defaultBase;
-            Position current = base;
+            List<DeliveryResult> allDeliveries = new ArrayList<>();
+            int totalDroneMoves = 0;
+            double totalDroneCost = 0.0;
+            int flightNumber = 0;
 
-            int movesLeft = safeGetMaxMoves(cap);
-            int usedMovesThisFlight = 0;
+            // Allow multiple flights per drone
+            while (!pending.isEmpty()) {
+                flightNumber++;
+                logger.info("Drone {} starting flight #{}", drone.getId(), flightNumber);
 
-            List<DeliveryResult> assigned = new ArrayList<>();
+                Position current = base;
+                int movesLeft = safeGetMaxMoves(cap);
+                int usedMovesThisFlight = 0;
+                double capacityUsed = 0.0;
 
-            List<MedDispatchRec> candidates = pending.stream()
-                    .filter(m -> fitsRequirements(m.getRequirements(), cap))
-                    .collect(Collectors.toCollection(ArrayList::new));
+                List<DeliveryResult> flightDeliveries = new ArrayList<>();
 
-            if (candidates.isEmpty()) continue;
+                // NEW: Filter candidates for THIS specific drone, checking availability per-dispatch
+                List<MedDispatchRec> candidates = pending.stream()
+                        .filter(m -> {
+                            if (!fitsRequirements(m.getRequirements(), cap)) {
+                                return false;
+                            }
+                            // Check if THIS drone is available for THIS specific dispatch
+                            List<String> available = droneAvailabilityService.queryAvailableDrones(List.of(m));
+                            boolean isAvailable = available.contains(drone.getId());
+                            if (!isAvailable) {
+                                logger.trace("Drone {} not available for dispatch {}", drone.getId(), m.getId());
+                            }
+                            return isAvailable;
+                        })
+                        .collect(Collectors.toCollection(ArrayList::new));
 
-            logger.info("Drone {} processing {} candidates", drone.getId(), candidates.size());
+                if (candidates.isEmpty()) {
+                    logger.debug("Drone {} has no valid candidates for flight #{}", drone.getId(), flightNumber);
+                    break;
+                }
 
-            while (!candidates.isEmpty()) {
-                MedDispatchRec next = nearest(current, candidates);
-                if (next == null) break;
+                logger.info("Drone {} has {} candidates for flight #{}", drone.getId(), candidates.size(), flightNumber);
 
-                Position dest = next.getDelivery();
+                while (!candidates.isEmpty() && movesLeft > 0) {
+                    MedDispatchRec next = nearest(current, candidates);
+                    if (next == null) break;
 
-                logger.info("Building path for delivery {} from ({}, {}) to ({}, {})",
-                        next.getId(), current.getLng(), current.getLat(),
-                        dest.getLng(), dest.getLat());
+                    Position dest = next.getDelivery();
 
-                if (isInNoFly(dest)) {
-                    logger.warn("Delivery {} destination is in restricted area - SKIPPING",
-                            next.getId());
-                    candidates.remove(next);
+                    logger.debug("Considering delivery {} from ({}, {}) to ({}, {})",
+                            next.getId(), current.getLng(), current.getLat(),
+                            dest.getLng(), dest.getLat());
+
+                    if (isInNoFly(dest)) {
+                        logger.warn("Delivery {} destination is in restricted area - SKIPPING",
+                                next.getId());
+                        candidates.remove(next);
+                        pending.remove(next);
+                        continue;
+                    }
+
+                    // Check capacity constraint
+                    if (capacityUsed + next.getRequirements().getCapacity() > cap.getCapacity() + EPS) {
+                        logger.debug("Adding delivery {} would exceed capacity ({} + {} > {})",
+                                next.getId(), capacityUsed, next.getRequirements().getCapacity(), cap.getCapacity());
+                        candidates.remove(next);
+                        continue;
+                    }
+
+                    List<LngLat> pathToDest = buildPathAvoidingRestrictions(current, dest);
+
+                    if (pathToDest == null || pathToDest.isEmpty()) {
+                        logger.warn("Failed to find path for delivery {}, trying relaxed", next.getId());
+                        pathToDest = buildPathWithRelaxedConstraints(current, dest);
+                    }
+
+                    if (pathToDest == null || pathToDest.isEmpty()) {
+                        logger.error("All pathfinding failed for delivery {} - SKIPPING", next.getId());
+                        candidates.remove(next);
+                        pending.remove(next);
+                        continue;
+                    }
+
+                    int toDest = pathToDest.size() - 1;
+                    int back = estimateStepsBack(dest, base);
+
+                    if (toDest + back > movesLeft) {
+                        logger.debug("Not enough moves for delivery {} ({} + {} > {})",
+                                next.getId(), toDest, back, movesLeft);
+                        candidates.remove(next);
+                        continue;
+                    }
+
+                    // Add hover at EXACT delivery location (2 identical points)
+                    pathToDest.add(new LngLat(dest.getLng(), dest.getLat()));
+
+                    movesLeft -= toDest;
+                    usedMovesThisFlight += toDest;
+                    capacityUsed += next.getRequirements().getCapacity();
+
+                    flightDeliveries.add(new DeliveryResult(next.getId(), pathToDest));
                     pending.remove(next);
-                    continue;
-                }
-
-                List<LngLat> pathToDest = buildPathAvoidingRestrictions(current, dest);
-
-                if (pathToDest == null || pathToDest.isEmpty()) {
-                    logger.warn("Failed to find path for delivery {}, trying relaxed", next.getId());
-                    pathToDest = buildPathWithRelaxedConstraints(current, dest);
-                }
-
-                if (pathToDest == null || pathToDest.isEmpty()) {
-                    logger.error("All pathfinding failed for delivery {} - SKIPPING", next.getId());
                     candidates.remove(next);
-                    pending.remove(next);
-                    continue;
+
+                    current = dest;
+                    logger.info("Delivery {} added ({} moves, {} moves left, {}/{} capacity used)",
+                            next.getId(), toDest, movesLeft, capacityUsed, cap.getCapacity());
                 }
 
-                int toDest = pathToDest.size() - 1;
-                int back = estimateStepsBack(dest, base);
-
-                if (toDest + back > movesLeft) {
-                    logger.debug("Not enough moves for delivery {} ({} + {} > {})",
-                            next.getId(), toDest, back, movesLeft);
-                    candidates.remove(next);
-                    continue;
+                if (flightDeliveries.isEmpty()) {
+                    logger.debug("No deliveries completed in flight #{}, stopping", flightNumber);
+                    break;
                 }
 
-                // Add hover at EXACT delivery location (2 identical points)
-                pathToDest.add(new LngLat(dest.getLng(), dest.getLat()));
-
-                movesLeft -= toDest;
-                usedMovesThisFlight += toDest;
-                totalMoves += toDest;
-
-                assigned.add(new DeliveryResult(next.getId(), pathToDest));
-                pending.remove(next);
-                candidates.remove(next);
-
-                current = dest;
-                logger.info("Delivery {} added ({} moves, {} moves left)",
-                        next.getId(), toDest, movesLeft);
-            }
-
-            if (assigned.isEmpty()) continue;
-
-            List<LngLat> returnPath = buildPathAvoidingRestrictions(current, base);
-            if (returnPath == null) {
-                returnPath = buildPathWithRelaxedConstraints(current, base);
-            }
-
-            int stepsBack = returnPath != null ? returnPath.size() - 1 : estimateStepsBack(current, base);
-
-            if (stepsBack > movesLeft || returnPath == null) {
-                logger.warn("Not enough moves to return - removing deliveries");
-                assigned.clear();
-                continue;
-            }
-
-            if (!assigned.isEmpty() && returnPath != null) {
-                DeliveryResult lastDelivery = assigned.get(assigned.size() - 1);
-                List<LngLat> lastPath = new ArrayList<>(lastDelivery.getFlightPath());
-
-                for (int i = 1; i < returnPath.size(); i++) {
-                    lastPath.add(returnPath.get(i));
+                // Return to base
+                List<LngLat> returnPath = buildPathAvoidingRestrictions(current, base);
+                if (returnPath == null) {
+                    returnPath = buildPathWithRelaxedConstraints(current, base);
                 }
 
-                lastDelivery.setFlightPath(lastPath);
+                int stepsBack = returnPath != null ? returnPath.size() - 1 : estimateStepsBack(current, base);
+
+                if (stepsBack > movesLeft || returnPath == null) {
+                    logger.warn("Not enough moves to return - removing deliveries from this flight");
+                    // Remove deliveries from this failed flight back to pending
+                    for (DeliveryResult dr : flightDeliveries) {
+                        pending.add(dispatches.stream()
+                                .filter(d -> d.getId().equals(dr.getDeliveryId()))
+                                .findFirst()
+                                .orElse(null));
+                    }
+                    break;
+                }
+
+                // Append return path to last delivery
+                if (!flightDeliveries.isEmpty() && returnPath != null) {
+                    DeliveryResult lastDelivery = flightDeliveries.get(flightDeliveries.size() - 1);
+                    List<LngLat> lastPath = new ArrayList<>(lastDelivery.getFlightPath());
+
+                    for (int i = 1; i < returnPath.size(); i++) {
+                        lastPath.add(returnPath.get(i));
+                    }
+
+                    lastDelivery.setFlightPath(lastPath);
+                }
+
+                usedMovesThisFlight += stepsBack;
+                totalDroneMoves += usedMovesThisFlight;
+
+                double flightCost = computeFlightCost(cap, usedMovesThisFlight);
+                totalDroneCost += flightCost;
+
+                allDeliveries.addAll(flightDeliveries);
+
+                logger.info("Flight #{} completed: {} deliveries, {} moves, ${} cost",
+                        flightNumber, flightDeliveries.size(), usedMovesThisFlight, flightCost);
+
+                // Reset for next flight
+                current = base;
             }
 
-            movesLeft -= stepsBack;
-            usedMovesThisFlight += stepsBack;
-            totalMoves += stepsBack;
+            if (!allDeliveries.isEmpty()) {
+                totalCost += totalDroneCost;
+                totalMoves += totalDroneMoves;
+                dronePaths.add(new DronePathResult(drone.getId(), allDeliveries));
 
-            double flightCost = computeFlightCost(cap, usedMovesThisFlight);
-            totalCost += flightCost;
-            dronePaths.add(new DronePathResult(drone.getId(), assigned));
-
-            logger.info("Drone {} completed: {} deliveries, {} moves, ${} cost",
-                    drone.getId(), assigned.size(), usedMovesThisFlight, flightCost);
+                logger.info("Drone {} completed: {} deliveries, {} moves, ${} cost",
+                        drone.getId(), allDeliveries.size(), totalDroneMoves, totalDroneCost);
+            }
         }
 
         logger.info("=== Completed: {} drones, {} moves, ${} cost ===",

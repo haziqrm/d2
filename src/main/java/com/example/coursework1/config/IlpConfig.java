@@ -5,7 +5,6 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class IlpConfig {
-
     @Bean
     public String ilpEndpoint() {
         return System.getenv().getOrDefault(

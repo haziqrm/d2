@@ -5,12 +5,11 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 
 public class MedDispatchRec {
-
     @NotNull
-    private Integer id;  // Integer per spec (not String)
+    private Integer id;
 
-    private String date;  // Format: "2025-12-22"
-    private String time;  // Format: "14:30"
+    private String date;
+    private String time;
 
     @Valid
     @NotNull
@@ -18,7 +17,7 @@ public class MedDispatchRec {
 
     @Valid
     @NotNull
-    private Position delivery;  // Delivery coordinates (lng/lat)
+    private Position delivery;
 
     public MedDispatchRec() {}
 
