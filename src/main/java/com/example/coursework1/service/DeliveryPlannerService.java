@@ -42,6 +42,24 @@ public class DeliveryPlannerService {
             return new CalcDeliveryResult(0.0, 0, List.of());
         }
 
+        // NEW: Validate all dispatches are on the same date
+        Set<String> uniqueDates = dispatches.stream()
+                .map(MedDispatchRec::getDate)
+                .filter(date -> date != null && !date.isEmpty())
+                .collect(Collectors.toSet());
+
+        if (uniqueDates.size() > 1) {
+            logger.error("Cannot plan delivery path for dispatches on different dates: {}", uniqueDates);
+            throw new IllegalArgumentException(
+                    "All dispatches must be on the same date. Found dates: " + uniqueDates);
+        }
+
+        if (uniqueDates.isEmpty()) {
+            logger.warn("No valid dates found in dispatches");
+        } else {
+            logger.info("Planning delivery path for date: {}", uniqueDates.iterator().next());
+        }
+
         List<MedDispatchRec> pending = new ArrayList<>(dispatches.stream()
                 .filter(d -> d != null && d.getId() != null &&
                         d.getRequirements() != null && d.getDelivery() != null)
@@ -57,8 +75,6 @@ public class DeliveryPlannerService {
         int totalMoves = 0;
         List<DronePathResult> dronePaths = new ArrayList<>();
 
-        // REMOVED: Upfront availability filtering that used AND logic
-        // Instead, we sort by capacity and check availability per-dispatch
         drones = drones.stream()
                 .sorted(Comparator.comparingDouble((Drone dr) -> -safeGetCapabilityCapacity(dr)))
                 .toList();
@@ -77,7 +93,6 @@ public class DeliveryPlannerService {
             double totalDroneCost = 0.0;
             int flightNumber = 0;
 
-            // Allow multiple flights per drone
             while (!pending.isEmpty()) {
                 flightNumber++;
                 logger.info("Drone {} starting flight #{}", drone.getId(), flightNumber);
@@ -89,13 +104,12 @@ public class DeliveryPlannerService {
 
                 List<DeliveryResult> flightDeliveries = new ArrayList<>();
 
-                // NEW: Filter candidates for THIS specific drone, checking availability per-dispatch
                 List<MedDispatchRec> candidates = pending.stream()
                         .filter(m -> {
                             if (!fitsRequirements(m.getRequirements(), cap)) {
                                 return false;
                             }
-                            // Check if THIS drone is available for THIS specific dispatch
+
                             List<String> available = droneAvailabilityService.queryAvailableDrones(List.of(m));
                             boolean isAvailable = available.contains(drone.getId());
                             if (!isAvailable) {
@@ -130,7 +144,6 @@ public class DeliveryPlannerService {
                         continue;
                     }
 
-                    // Check capacity constraint
                     if (capacityUsed + next.getRequirements().getCapacity() > cap.getCapacity() + EPS) {
                         logger.debug("Adding delivery {} would exceed capacity ({} + {} > {})",
                                 next.getId(), capacityUsed, next.getRequirements().getCapacity(), cap.getCapacity());
@@ -162,7 +175,6 @@ public class DeliveryPlannerService {
                         continue;
                     }
 
-                    // Add hover at EXACT delivery location (2 identical points)
                     pathToDest.add(new LngLat(dest.getLng(), dest.getLat()));
 
                     movesLeft -= toDest;
@@ -183,7 +195,6 @@ public class DeliveryPlannerService {
                     break;
                 }
 
-                // Return to base
                 List<LngLat> returnPath = buildPathAvoidingRestrictions(current, base);
                 if (returnPath == null) {
                     returnPath = buildPathWithRelaxedConstraints(current, base);
@@ -193,7 +204,6 @@ public class DeliveryPlannerService {
 
                 if (stepsBack > movesLeft || returnPath == null) {
                     logger.warn("Not enough moves to return - removing deliveries from this flight");
-                    // Remove deliveries from this failed flight back to pending
                     for (DeliveryResult dr : flightDeliveries) {
                         pending.add(dispatches.stream()
                                 .filter(d -> d.getId().equals(dr.getDeliveryId()))
@@ -203,7 +213,6 @@ public class DeliveryPlannerService {
                     break;
                 }
 
-                // Append return path to last delivery
                 if (!flightDeliveries.isEmpty() && returnPath != null) {
                     DeliveryResult lastDelivery = flightDeliveries.get(flightDeliveries.size() - 1);
                     List<LngLat> lastPath = new ArrayList<>(lastDelivery.getFlightPath());
@@ -226,7 +235,6 @@ public class DeliveryPlannerService {
                 logger.info("Flight #{} completed: {} deliveries, {} moves, ${} cost",
                         flightNumber, flightDeliveries.size(), usedMovesThisFlight, flightCost);
 
-                // Reset for next flight
                 current = base;
             }
 
@@ -348,7 +356,6 @@ public class DeliveryPlannerService {
             }
         }
 
-        // ALWAYS add exact destination coordinates as final point
         LngLat lastPoint = path.get(path.size() - 1);
         if (Math.abs(lastPoint.getLng() - to.getLng()) > EPS ||
                 Math.abs(lastPoint.getLat() - to.getLat()) > EPS) {
