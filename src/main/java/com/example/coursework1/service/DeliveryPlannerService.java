@@ -19,16 +19,11 @@ public class DeliveryPlannerService {
     private final RestrictedAreaService restrictedAreaService;
     private final DroneAvailabilityService droneAvailabilityService;
 
-    private static final double STEP = 0.00015;
-    private static final double CLOSE_THRESHOLD = 0.00015;
+    private static final double STEP = 0.00015;  // Each move is exactly 0.00015 degrees
+    private static final double ANGLE_INCREMENT = 22.5;  // 16 compass directions (360/16 = 22.5)
+    private static final double CLOSE_THRESHOLD = 0.00015;  // isCloseTo threshold
     private static final double EPS = 1e-12;
-    private static final int MAX_PATH_ITERATIONS = 50000;
-
-    // All 16 compass directions
-    private static final double[] ANGLES = {
-            0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5,
-            180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5
-    };
+    private static final int MAX_PATH_ITERATIONS = 20000;
 
     public DeliveryPlannerService(DroneService droneService,
                                   ServicePointService servicePointService,
@@ -38,49 +33,6 @@ public class DeliveryPlannerService {
         this.servicePointService = servicePointService;
         this.restrictedAreaService = restrictedAreaService;
         this.droneAvailabilityService = droneAvailabilityService;
-    }
-
-    /**
-     * A* Node class for pathfinding
-     */
-    private static class Node implements Comparable<Node> {
-        Position position;
-        Node parent;
-        double gCost; // Actual cost from start
-        double hCost; // Heuristic cost to goal
-        double fCost; // Total cost (g + h)
-
-        Node(Position position) {
-            this.position = position;
-            this.gCost = Double.POSITIVE_INFINITY;
-            this.hCost = 0;
-            this.fCost = Double.POSITIVE_INFINITY;
-        }
-
-        @Override
-        public int compareTo(Node other) {
-            int fCompare = Double.compare(this.fCost, other.fCost);
-            if (fCompare != 0) return fCompare;
-            // Tie-breaker: prefer nodes closer to goal
-            return Double.compare(this.hCost, other.hCost);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            Node node = (Node) o;
-            return Math.abs(position.getLng() - node.position.getLng()) < 1e-9 &&
-                    Math.abs(position.getLat() - node.position.getLat()) < 1e-9;
-        }
-
-        @Override
-        public int hashCode() {
-            // Grid-based hashing to avoid floating-point issues
-            long lngGrid = Math.round(position.getLng() / STEP);
-            long latGrid = Math.round(position.getLat() / STEP);
-            return Objects.hash(lngGrid, latGrid);
-        }
     }
 
     public CalcDeliveryResult calcDeliveryPath(List<MedDispatchRec> dispatches) {
@@ -165,10 +117,15 @@ public class DeliveryPlannerService {
         for (MedDispatchRec dispatch : dispatches) {
             Position dest = dispatch.getDelivery();
 
-            List<LngLat> pathToDest = findPathAStar(current, dest);
+            List<LngLat> pathToDest = buildPathAvoidingRestrictions(current, dest);
 
             if (pathToDest == null || pathToDest.isEmpty()) {
-                logger.error("A* pathfinding failed for delivery {} - cannot complete single-drone delivery",
+                logger.warn("Failed to find path for delivery {}, trying relaxed", dispatch.getId());
+                pathToDest = buildPathWithRelaxedConstraints(current, dest);
+            }
+
+            if (pathToDest == null || pathToDest.isEmpty()) {
+                logger.error("All pathfinding failed for delivery {} - cannot complete single-drone delivery",
                         dispatch.getId());
                 return null;
             }
@@ -201,11 +158,14 @@ public class DeliveryPlannerService {
 
             allDeliveries.add(new DeliveryResult(dispatch.getId(), pathToDest));
 
-            logger.debug("Added delivery {} ({} steps, distance to target: {})",
-                    dispatch.getId(), steps, closestDist);
+            logger.debug("Added delivery {} ({} steps, hovering at {}, {} - distance to target: {})",
+                    dispatch.getId(), steps, current.getLng(), current.getLat(), closestDist);
         }
 
-        List<LngLat> returnPath = findPathAStar(current, base);
+        List<LngLat> returnPath = buildPathAvoidingRestrictions(current, base);
+        if (returnPath == null) {
+            returnPath = buildPathWithRelaxedConstraints(current, base);
+        }
 
         if (returnPath == null || returnPath.isEmpty()) {
             logger.error("Failed to find return path - cannot complete single-drone delivery");
@@ -316,10 +276,15 @@ public class DeliveryPlannerService {
                         continue;
                     }
 
-                    List<LngLat> pathToDest = findPathAStar(current, dest);
+                    List<LngLat> pathToDest = buildPathAvoidingRestrictions(current, dest);
 
                     if (pathToDest == null || pathToDest.isEmpty()) {
-                        logger.error("A* pathfinding failed for delivery {} - SKIPPING", next.getId());
+                        logger.warn("Failed to find path for delivery {}, trying relaxed", next.getId());
+                        pathToDest = buildPathWithRelaxedConstraints(current, dest);
+                    }
+
+                    if (pathToDest == null || pathToDest.isEmpty()) {
+                        logger.error("All pathfinding failed for delivery {} - SKIPPING", next.getId());
                         candidates.remove(next);
                         pending.remove(next);
                         continue;
@@ -366,8 +331,9 @@ public class DeliveryPlannerService {
                     pending.remove(next);
                     candidates.remove(next);
 
-                    logger.info("Delivery {} added ({} moves, {} moves left, {}/{} capacity used, distance to target: {})",
-                            next.getId(), toDest, movesLeft, capacityUsed, cap.getCapacity(), closestDist);
+                    logger.info("Delivery {} added ({} moves, {} moves left, {}/{} capacity used, hovering at {}, {} - distance to target: {})",
+                            next.getId(), toDest, movesLeft, capacityUsed, cap.getCapacity(),
+                            current.getLng(), current.getLat(), closestDist);
                 }
 
                 if (flightDeliveries.isEmpty()) {
@@ -375,7 +341,10 @@ public class DeliveryPlannerService {
                     break;
                 }
 
-                List<LngLat> returnPath = findPathAStar(current, base);
+                List<LngLat> returnPath = buildPathAvoidingRestrictions(current, base);
+                if (returnPath == null) {
+                    returnPath = buildPathWithRelaxedConstraints(current, base);
+                }
 
                 int stepsBack = returnPath != null ? returnPath.size() - 1 : estimateStepsBack(current, base);
 
@@ -432,137 +401,222 @@ public class DeliveryPlannerService {
         return new CalcDeliveryResult(totalCost, totalMoves, dronePaths);
     }
 
-    /**
-     * A* pathfinding algorithm - finds optimal path avoiding restricted areas
-     */
-    private List<LngLat> findPathAStar(Position start, Position end) {
-        logger.debug("A* starting path from ({}, {}) to ({}, {})",
-                start.getLng(), start.getLat(), end.getLng(), end.getLat());
+    private List<LngLat> buildPathAvoidingRestrictions(Position from, Position to) {
+        if (from == null || to == null) {
+            logger.error("Null position in buildPath: from={}, to={}", from, to);
+            return null;
+        }
 
-        Node startNode = new Node(start);
-        Node endNode = new Node(end);
+        logger.debug("Building path from ({}, {}) to ({}, {})",
+                from.getLng(), from.getLat(), to.getLng(), to.getLat());
 
-        Map<Node, Node> openSetMap = new HashMap<>();
-        PriorityQueue<Node> openSetQueue = new PriorityQueue<>();
-        HashSet<Node> closedSet = new HashSet<>();
+        List<LngLat> path = new ArrayList<>();
+        path.add(new LngLat(from.getLng(), from.getLat()));
 
-        startNode.gCost = 0;
-        startNode.hCost = dist(start, end);
-        startNode.fCost = startNode.hCost;
-
-        openSetQueue.add(startNode);
-        openSetMap.put(startNode, startNode);
-
+        Position current = new Position(from.getLng(), from.getLat());
         int iterations = 0;
 
-        while (!openSetQueue.isEmpty() && iterations < MAX_PATH_ITERATIONS) {
+        while (!isCloseEnough(current, to) && iterations < MAX_PATH_ITERATIONS) {
             iterations++;
 
-            if (iterations % 10000 == 0) {
-                logger.debug("A* iteration {}, open set size: {}, closed set size: {}",
-                        iterations, openSetQueue.size(), closedSet.size());
+            double targetAngle = calculateAngle(current, to);
+            Position nextDirect = moveInDirection(current, targetAngle);
+
+            if (!pathSegmentCrossesRestriction(current, nextDirect)) {
+                current = nextDirect;
+                path.add(new LngLat(current.getLng(), current.getLat()));
+            } else {
+                Position nextPos = findAlternativeMove(current, to, targetAngle);
+
+                if (nextPos == null) {
+                    logger.warn("No alternative move at iteration {}", iterations);
+                    return null;
+                }
+
+                current = nextPos;
+                path.add(new LngLat(current.getLng(), current.getLat()));
             }
 
-            Node currentNode = openSetQueue.poll();
-            openSetMap.remove(currentNode);
-
-            if (checkPointsClose(currentNode.position, endNode.position)) {
-                logger.debug("A* found path in {} iterations", iterations);
-                return reconstructPath(currentNode);
-            }
-
-            closedSet.add(currentNode);
-
-            for (double angle : ANGLES) {
-                Position neighborPos = calculateNextPosition(currentNode.position, angle);
-
-                Node neighborNode = new Node(neighborPos);
-
-                if (closedSet.contains(neighborNode)) {
-                    continue;
-                }
-
-                // Check both the point and the line segment
-                if (isInvalidMove(currentNode.position, neighborPos)) {
-                    continue;
-                }
-
-                double tentativeGCost = currentNode.gCost + STEP;
-                Node existingNode = openSetMap.get(neighborNode);
-
-                if (existingNode == null) {
-                    neighborNode.parent = currentNode;
-                    neighborNode.gCost = tentativeGCost;
-                    neighborNode.hCost = dist(neighborPos, end);
-                    neighborNode.fCost = neighborNode.gCost + neighborNode.hCost;
-                    openSetQueue.add(neighborNode);
-                    openSetMap.put(neighborNode, neighborNode);
-                } else if (tentativeGCost < existingNode.gCost) {
-                    existingNode.parent = currentNode;
-                    existingNode.gCost = tentativeGCost;
-                    existingNode.fCost = existingNode.gCost + existingNode.hCost;
-                    openSetQueue.remove(existingNode);
-                    openSetQueue.add(existingNode);
-                }
+            if (iterations % 1000 == 0) {
+                logger.debug("Pathfinding iteration {}, distance remaining: {}",
+                        iterations, dist(current, to));
             }
         }
 
-        if (iterations >= MAX_PATH_ITERATIONS) {
-            logger.warn("A* exceeded max iterations ({}) from ({}, {}) to ({}, {})",
-                    MAX_PATH_ITERATIONS, start.getLng(), start.getLat(), end.getLng(), end.getLat());
-        } else {
-            logger.warn("A* could not find path from ({}, {}) to ({}, {}) (exhausted search space after {} iterations)",
-                    start.getLng(), start.getLat(), end.getLng(), end.getLat(), iterations);
-        }
+        logger.debug("Path built with {} steps, hovering at ({}, {}) which is within {} of target ({}, {})",
+                path.size(), current.getLng(), current.getLat(),
+                dist(current, to), to.getLng(), to.getLat());
 
-        return Collections.emptyList();
+        return path;
     }
 
-    /**
-     * Check if a move from 'from' to 'to' is invalid.
-     * A move is invalid if:
-     * 1. The destination point is inside a no-fly zone, OR
-     * 2. The line segment from 'from' to 'to' crosses a no-fly zone boundary
-     */
-    private boolean isInvalidMove(Position from, Position to) {
-        // Check if the destination point is inside a restricted zone
-        if (restrictedAreaService.isInRestrictedArea(to)) {
-            return true;
+    private List<LngLat> buildPathWithRelaxedConstraints(Position from, Position to) {
+        logger.debug("Trying relaxed pathfinding");
+
+        List<LngLat> path = new ArrayList<>();
+        path.add(new LngLat(from.getLng(), from.getLat()));
+
+        Position current = new Position(from.getLng(), from.getLat());
+        int iterations = 0;
+        int stuckCounter = 0;
+        double lastDistance = dist(current, to);
+
+        while (!isCloseEnough(current, to) && iterations < MAX_PATH_ITERATIONS) {
+            iterations++;
+
+            double targetAngle = calculateAngle(current, to);
+            Position nextDirect = moveInDirection(current, targetAngle);
+
+            if (!pathSegmentCrossesRestriction(current, nextDirect)) {
+                current = nextDirect;
+                path.add(new LngLat(current.getLng(), current.getLat()));
+                stuckCounter = 0;
+                lastDistance = dist(current, to);
+            } else {
+                Position nextPos = findAlternativeMoveRelaxed(current, to, targetAngle, stuckCounter);
+
+                if (nextPos == null) {
+                    logger.warn("No alternative move in relaxed mode at iteration {}", iterations);
+                    return null;
+                }
+
+                current = nextPos;
+                path.add(new LngLat(current.getLng(), current.getLat()));
+
+                double currentDistance = dist(current, to);
+                if (currentDistance >= lastDistance) {
+                    stuckCounter++;
+                } else {
+                    stuckCounter = Math.max(0, stuckCounter - 1);
+                }
+                lastDistance = currentDistance;
+
+                if (stuckCounter > 50) {
+                    logger.warn("Stuck for {} iterations, abandoning", stuckCounter);
+                    return null;
+                }
+            }
         }
 
-        // Check if the line segment crosses a restricted zone boundary
+        logger.debug("Relaxed pathfinding succeeded with {} steps, hovering at ({}, {}) which is within {} of target ({}, {})",
+                path.size(), current.getLng(), current.getLat(),
+                dist(current, to), to.getLng(), to.getLat());
+
+        return path;
+    }
+
+    private Position findAlternativeMove(Position current, Position target, double targetAngle) {
+        double[] offsets = {-ANGLE_INCREMENT, ANGLE_INCREMENT,
+                -2*ANGLE_INCREMENT, 2*ANGLE_INCREMENT,
+                -3*ANGLE_INCREMENT, 3*ANGLE_INCREMENT,
+                -4*ANGLE_INCREMENT, 4*ANGLE_INCREMENT};
+
+        for (double offset : offsets) {
+            double testAngle = normalizeAngle(targetAngle + offset);
+            Position testPos = moveInDirection(current, testAngle);
+
+            if (!pathSegmentCrossesRestriction(current, testPos)) {
+                double distBefore = dist(current, target);
+                double distAfter = dist(testPos, target);
+
+                if (distAfter <= distBefore * 1.5) {
+                    return testPos;
+                }
+            }
+        }
+
+        for (int i = 0; i < 16; i++) {
+            double testAngle = i * ANGLE_INCREMENT;
+            Position testPos = moveInDirection(current, testAngle);
+
+            if (!pathSegmentCrossesRestriction(current, testPos)) {
+                return testPos;
+            }
+        }
+
+        return null;
+    }
+
+    private Position findAlternativeMoveRelaxed(Position current, Position target,
+                                                double targetAngle, int stuckCounter) {
+        double[] offsets = {
+                -ANGLE_INCREMENT, ANGLE_INCREMENT,
+                -2*ANGLE_INCREMENT, 2*ANGLE_INCREMENT,
+                -3*ANGLE_INCREMENT, 3*ANGLE_INCREMENT,
+                -4*ANGLE_INCREMENT, 4*ANGLE_INCREMENT,
+                -5*ANGLE_INCREMENT, 5*ANGLE_INCREMENT,
+                -6*ANGLE_INCREMENT, 6*ANGLE_INCREMENT
+        };
+
+        for (double offset : offsets) {
+            double testAngle = normalizeAngle(targetAngle + offset);
+            Position testPos = moveInDirection(current, testAngle);
+
+            if (!pathSegmentCrossesRestriction(current, testPos)) {
+                double distBefore = dist(current, target);
+                double distAfter = dist(testPos, target);
+
+                double tolerance = stuckCounter > 20 ? 2.0 : 1.5;
+                if (distAfter <= distBefore * tolerance) {
+                    return testPos;
+                }
+            }
+        }
+
+        List<Position> validMoves = new ArrayList<>();
+        for (int i = 0; i < 16; i++) {
+            double testAngle = i * ANGLE_INCREMENT;
+            Position testPos = moveInDirection(current, testAngle);
+
+            if (!pathSegmentCrossesRestriction(current, testPos)) {
+                validMoves.add(testPos);
+            }
+        }
+
+        if (validMoves.isEmpty()) {
+            return null;
+        }
+
+        Position best = null;
+        double bestDist = Double.POSITIVE_INFINITY;
+        for (Position pos : validMoves) {
+            double d = dist(pos, target);
+            if (d < bestDist) {
+                bestDist = d;
+                best = pos;
+            }
+        }
+
+        return best;
+    }
+
+    private boolean pathSegmentCrossesRestriction(Position from, Position to) {
         return restrictedAreaService.pathCrossesRestrictedArea(from, to);
     }
 
-    /**
-     * Calculate next position based on current position and angle
-     */
-    private Position calculateNextPosition(Position current, double angleDegrees) {
+    private Position moveInDirection(Position from, double angleDegrees) {
         double angleRad = Math.toRadians(angleDegrees);
-        double newLng = current.getLng() + STEP * Math.cos(angleRad);
-        double newLat = current.getLat() + STEP * Math.sin(angleRad);
+        double newLng = from.getLng() + STEP * Math.cos(angleRad);
+        double newLat = from.getLat() + STEP * Math.sin(angleRad);
         return new Position(newLng, newLat);
     }
 
-    /**
-     * Check if two points are close enough (within CLOSE_THRESHOLD)
-     */
-    private boolean checkPointsClose(Position p1, Position p2) {
-        return dist(p1, p2) < CLOSE_THRESHOLD;
+    private double calculateAngle(Position from, Position to) {
+        double dx = to.getLng() - from.getLng();
+        double dy = to.getLat() - from.getLat();
+        double angleRad = Math.atan2(dy, dx);
+        double angleDeg = Math.toDegrees(angleRad);
+        return normalizeAngle(angleDeg);
     }
 
-    /**
-     * Reconstruct path from goal node by following parent pointers
-     */
-    private List<LngLat> reconstructPath(Node endNode) {
-        List<LngLat> path = new ArrayList<>();
-        Node current = endNode;
-        while (current != null) {
-            path.add(new LngLat(current.position.getLng(), current.position.getLat()));
-            current = current.parent;
-        }
-        Collections.reverse(path);
-        return path;
+    private double normalizeAngle(double angle) {
+        while (angle < 0) angle += 360;
+        while (angle >= 360) angle -= 360;
+        return Math.round(angle / ANGLE_INCREMENT) * ANGLE_INCREMENT;
+    }
+
+    private boolean isCloseEnough(Position p1, Position p2) {
+        return dist(p1, p2) < CLOSE_THRESHOLD;
     }
 
     private int estimateStepsBack(Position from, Position to) {
@@ -618,5 +672,10 @@ public class DeliveryPlannerService {
     private double safeGetCapabilityCapacity(Drone d) {
         if (d == null || d.getCapability() == null) return 0.0;
         return d.getCapability().getCapacity();
+    }
+
+    private boolean isInNoFly(Position p) {
+        if (p == null) return false;
+        return restrictedAreaService.isInRestrictedArea(p);
     }
 }
