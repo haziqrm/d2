@@ -6,7 +6,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class GeoJsonService {
@@ -18,17 +20,19 @@ public class GeoJsonService {
         this.deliveryPlannerService = deliveryPlannerService;
     }
 
-    public GeoJsonResponse calcDeliveryPathAsGeoJson(List<MedDispatchRec> dispatches) {
+    public Object calcDeliveryPathAsGeoJson(List<MedDispatchRec> dispatches) {
         CalcDeliveryResult result = deliveryPlannerService.calcDeliveryPath(dispatches);
+
+        if (result.getDronePaths() != null && result.getDronePaths().size() > 1) {
+            logger.info("Multiple drones ({}) used - generating FeatureCollection",
+                    result.getDronePaths().size());
+            return createFeatureCollection(result);
+        }
 
         List<double[]> coordinates = new ArrayList<>();
         if (result.getDronePaths() == null || result.getDronePaths().isEmpty()) {
             logger.warn("No drone paths found for GeoJSON generation");
             coordinates.add(new double[]{0.0, 0.0});
-        } else if (result.getDronePaths().size() > 1) {
-            logger.warn("calcDeliveryPathAsGeoJson called but {} drones were needed (should be 1)",
-                    result.getDronePaths().size());
-            extractPathFromDrone(result.getDronePaths().get(0), coordinates);
         } else {
             DronePathResult dronePath = result.getDronePaths().get(0);
             extractPathFromDrone(dronePath, coordinates);
@@ -47,6 +51,51 @@ public class GeoJsonService {
         geoJson.getProperties().put("droneCount", result.getDronePaths().size());
 
         return geoJson;
+    }
+
+    private Map<String, Object> createFeatureCollection(CalcDeliveryResult result) {
+        Map<String, Object> featureCollection = new HashMap<>();
+        featureCollection.put("type", "FeatureCollection");
+
+        List<Map<String, Object>> features = new ArrayList<>();
+
+        for (DronePathResult dronePath : result.getDronePaths()) {
+            Map<String, Object> feature = new HashMap<>();
+            feature.put("type", "Feature");
+
+            List<double[]> coordinates = new ArrayList<>();
+            extractPathFromDrone(dronePath, coordinates);
+
+            if (!coordinates.isEmpty()) {
+                Map<String, Object> geometry = new HashMap<>();
+                geometry.put("type", "LineString");
+                geometry.put("coordinates", coordinates);
+                feature.put("geometry", geometry);
+
+                Map<String, Object> properties = new HashMap<>();
+                properties.put("droneId", dronePath.getDroneId());
+                properties.put("deliveryCount", dronePath.getDeliveries().size());
+
+                int droneMoves = 0;
+                for (DeliveryResult delivery : dronePath.getDeliveries()) {
+                    if (delivery.getFlightPath() != null) {
+                        droneMoves += delivery.getFlightPath().size() - 1;
+                    }
+                }
+                properties.put("moves", droneMoves);
+
+                properties.put("totalCost", result.getTotalCost());
+                properties.put("totalMoves", result.getTotalMoves());
+                properties.put("droneCount", result.getDronePaths().size());
+
+                feature.put("properties", properties);
+                features.add(feature);
+            }
+        }
+
+        featureCollection.put("features", features);
+
+        return featureCollection;
     }
 
     private void extractPathFromDrone(DronePathResult dronePath, List<double[]> coordinates) {

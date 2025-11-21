@@ -19,7 +19,6 @@ public class RestrictedAreaRepository {
     private final RestTemplate restTemplate;
     private final String ilpEndpoint;
 
-    // Cache to avoid repeated API calls (data is relatively static)
     private List<RestrictedArea> cachedRestrictedAreas = null;
 
     public RestrictedAreaRepository(RestTemplate restTemplate, String ilpEndpoint) {

@@ -45,10 +45,6 @@ public class DroneRepository {
         }
     }
 
-    /**
-     * Fetch drone availability organized by service point
-     * Endpoint: /drones-for-service-points
-     */
     public List<ServicePointDrones> fetchDronesForServicePoints() {
         try {
             String url = ilpEndpoint + "drones-for-service-points";

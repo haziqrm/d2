@@ -4,7 +4,7 @@ import java.util.List;
 
 public class DronePathResult {
 
-    private String droneId;  // Changed to String
+    private String droneId;
     private List<DeliveryResult> deliveries;
 
     public DronePathResult() {}

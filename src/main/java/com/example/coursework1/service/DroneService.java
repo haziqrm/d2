@@ -21,9 +21,6 @@ public class DroneService {
         return droneRepository.fetchAllDrones();
     }
 
-    /**
-     * Fetch drone availability organized by service point
-     */
     public List<ServicePointDrones> fetchDronesForServicePoints() {
         return droneRepository.fetchDronesForServicePoints();
     }
@@ -67,13 +64,11 @@ public class DroneService {
 
         if (value == null) return false;
 
-        // String comparison (equality only)
         if (!(value instanceof Number)) {
             return operator.equals("=") &&
                     value.toString().equalsIgnoreCase(rawValue);
         }
 
-        // Numerical comparison (supports <, >, =, !=)
         double droneVal = ((Number) value).doubleValue();
         double queryVal;
 

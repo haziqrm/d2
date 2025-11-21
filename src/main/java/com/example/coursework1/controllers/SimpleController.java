@@ -114,10 +114,10 @@ public class SimpleController {
     }
 
     @PostMapping("/calcDeliveryPathAsGeoJson")
-    public ResponseEntity<GeoJsonResponse> calcDeliveryPathAsGeoJson(
+    public ResponseEntity<?> calcDeliveryPathAsGeoJson(
             @RequestBody List<MedDispatchRec> recs) {
 
-        GeoJsonResponse geoJson = geoJsonService.calcDeliveryPathAsGeoJson(recs);
+        Object geoJson = geoJsonService.calcDeliveryPathAsGeoJson(recs);
         return ResponseEntity.ok(geoJson);
     }
 }

@@ -39,7 +39,7 @@ public class DroneAvailabilityService {
             return List.of();
         }
 
-        logger.info("Querying available drones for {} valid dispatches (AND logic - must match ALL)",
+        logger.info("Querying available drones for {} valid dispatches (single journey - must handle ALL in one trip)",
                 validDispatches.size());
 
         List<Drone> allDrones = droneService.fetchAllDrones();
@@ -55,14 +55,14 @@ public class DroneAvailabilityService {
         for (Drone drone : allDrones) {
             if (canHandleAllDispatches(drone, validDispatches, availabilityMap)) {
                 availableDroneIds.add(drone.getId());
-                logger.debug("Drone {} CAN handle all {} dispatches",
+                logger.debug("Drone {} CAN handle all {} dispatches in single journey",
                         drone.getId(), validDispatches.size());
             } else {
-                logger.debug("Drone {} CANNOT handle all dispatches", drone.getId());
+                logger.debug("Drone {} CANNOT handle all dispatches in single journey", drone.getId());
             }
         }
 
-        logger.info("Found {} available drones (out of {}) that can handle ALL {} dispatches",
+        logger.info("Found {} available drones (out of {}) that can handle ALL {} dispatches in single journey",
                 availableDroneIds.size(), allDrones.size(), validDispatches.size());
 
         return availableDroneIds;
@@ -97,11 +97,21 @@ public class DroneAvailabilityService {
 
         Capability capability = drone.getCapability();
 
+        double totalCapacityNeeded = dispatches.stream()
+                .mapToDouble(d -> d.getRequirements().getCapacity())
+                .sum();
+
+        if (totalCapacityNeeded > capability.getCapacity() + EPS) {
+            logger.trace("Drone {} failed total capacity check for single journey ({} > {})",
+                    drone.getId(), totalCapacityNeeded, capability.getCapacity());
+            return false;
+        }
+
         for (MedDispatchRec dispatch : dispatches) {
             Requirements req = dispatch.getRequirements();
 
             if (capability.getCapacity() + EPS < req.getCapacity()) {
-                logger.trace("Drone {} failed capacity check for dispatch {} ({} < {})",
+                logger.trace("Drone {} failed individual capacity check for dispatch {} ({} < {})",
                         drone.getId(), dispatch.getId(),
                         capability.getCapacity(), req.getCapacity());
                 return false;
