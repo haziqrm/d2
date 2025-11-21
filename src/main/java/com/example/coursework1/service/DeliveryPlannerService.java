@@ -64,6 +64,23 @@ public class DeliveryPlannerService {
             // Tie-breaker: prefer nodes closer to goal
             return Double.compare(this.hCost, other.hCost);
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            Node node = (Node) o;
+            return Math.abs(position.getLng() - node.position.getLng()) < 1e-9 &&
+                    Math.abs(position.getLat() - node.position.getLat()) < 1e-9;
+        }
+
+        @Override
+        public int hashCode() {
+            // Grid-based hashing to avoid floating-point issues
+            long lngGrid = Math.round(position.getLng() / STEP);
+            long latGrid = Math.round(position.getLat() / STEP);
+            return Objects.hash(lngGrid, latGrid);
+        }
     }
 
     public CalcDeliveryResult calcDeliveryPath(List<MedDispatchRec> dispatches) {
@@ -425,17 +442,16 @@ public class DeliveryPlannerService {
         Node startNode = new Node(start);
         Node endNode = new Node(end);
 
-        // Use Position as key, not Node - this fixes the HashMap contract issue
-        Map<Position, Node> openSetMap = new HashMap<>();
+        Map<Node, Node> openSetMap = new HashMap<>();
         PriorityQueue<Node> openSetQueue = new PriorityQueue<>();
-        HashSet<Position> closedSet = new HashSet<>();
+        HashSet<Node> closedSet = new HashSet<>();
 
         startNode.gCost = 0;
         startNode.hCost = dist(start, end);
         startNode.fCost = startNode.hCost;
 
         openSetQueue.add(startNode);
-        openSetMap.put(startNode.position, startNode);
+        openSetMap.put(startNode, startNode);
 
         int iterations = 0;
 
@@ -448,19 +464,21 @@ public class DeliveryPlannerService {
             }
 
             Node currentNode = openSetQueue.poll();
-            openSetMap.remove(currentNode.position);
+            openSetMap.remove(currentNode);
 
             if (checkPointsClose(currentNode.position, endNode.position)) {
                 logger.debug("A* found path in {} iterations", iterations);
                 return reconstructPath(currentNode);
             }
 
-            closedSet.add(currentNode.position);
+            closedSet.add(currentNode);
 
             for (double angle : ANGLES) {
                 Position neighborPos = calculateNextPosition(currentNode.position, angle);
 
-                if (closedSet.contains(neighborPos)) {
+                Node neighborNode = new Node(neighborPos);
+
+                if (closedSet.contains(neighborNode)) {
                     continue;
                 }
 
@@ -470,22 +488,21 @@ public class DeliveryPlannerService {
                 }
 
                 double tentativeGCost = currentNode.gCost + STEP;
-                Node neighborNode = openSetMap.get(neighborPos);
+                Node existingNode = openSetMap.get(neighborNode);
 
-                if (neighborNode == null) {
-                    neighborNode = new Node(neighborPos);
+                if (existingNode == null) {
                     neighborNode.parent = currentNode;
                     neighborNode.gCost = tentativeGCost;
                     neighborNode.hCost = dist(neighborPos, end);
                     neighborNode.fCost = neighborNode.gCost + neighborNode.hCost;
                     openSetQueue.add(neighborNode);
-                    openSetMap.put(neighborPos, neighborNode);
-                } else if (tentativeGCost < neighborNode.gCost) {
-                    neighborNode.parent = currentNode;
-                    neighborNode.gCost = tentativeGCost;
-                    neighborNode.fCost = neighborNode.gCost + neighborNode.hCost;
-                    openSetQueue.remove(neighborNode);
-                    openSetQueue.add(neighborNode);
+                    openSetMap.put(neighborNode, neighborNode);
+                } else if (tentativeGCost < existingNode.gCost) {
+                    existingNode.parent = currentNode;
+                    existingNode.gCost = tentativeGCost;
+                    existingNode.fCost = existingNode.gCost + existingNode.hCost;
+                    openSetQueue.remove(existingNode);
+                    openSetQueue.add(existingNode);
                 }
             }
         }
