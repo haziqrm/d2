@@ -83,6 +83,8 @@ public class DroneService {
             case "!=" -> droneVal != queryVal;
             case "<"  -> droneVal < queryVal;
             case ">"  -> droneVal > queryVal;
+            case "<="  -> droneVal <= queryVal;
+            case ">="  -> droneVal >= queryVal;
             default -> false;
         };
     }

@@ -2,6 +2,7 @@ package com.example.coursework1.service;
 
 import com.example.coursework1.dto.*;
 import com.example.coursework1.model.Position;
+import com.example.coursework1.model.RestrictedArea;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -19,11 +20,11 @@ public class DeliveryPlannerService {
     private final RestrictedAreaService restrictedAreaService;
     private final DroneAvailabilityService droneAvailabilityService;
 
-    private static final double STEP = 0.00015;  // Each move is exactly 0.00015 degrees
-    private static final double ANGLE_INCREMENT = 22.5;  // 16 compass directions (360/16 = 22.5)
-    private static final double CLOSE_THRESHOLD = 0.00015;  // isCloseTo threshold
+    private static final double STEP = 0.00015;
+    private static final double ANGLE_INCREMENT = 22.5;
+    private static final double CLOSE_THRESHOLD = 0.00015;
     private static final double EPS = 1e-12;
-    private static final int MAX_PATH_ITERATIONS = 20000;
+    private static final int MAX_PATH_ITERATIONS = 30000;
 
     public DeliveryPlannerService(DroneService droneService,
                                   ServicePointService servicePointService,
@@ -117,10 +118,14 @@ public class DeliveryPlannerService {
         for (MedDispatchRec dispatch : dispatches) {
             Position dest = dispatch.getDelivery();
 
+            logger.debug("Planning path for delivery {} from {} to {}",
+                    dispatch.getId(), current, dest);
+
             List<LngLat> pathToDest = buildPathAvoidingRestrictions(current, dest);
 
             if (pathToDest == null || pathToDest.isEmpty()) {
                 logger.warn("Failed to find path for delivery {}, trying relaxed", dispatch.getId());
+                diagnoseDeliveryFailure(dispatch, current);
                 pathToDest = buildPathWithRelaxedConstraints(current, dest);
             }
 
@@ -280,6 +285,7 @@ public class DeliveryPlannerService {
 
                     if (pathToDest == null || pathToDest.isEmpty()) {
                         logger.warn("Failed to find path for delivery {}, trying relaxed", next.getId());
+                        diagnoseDeliveryFailure(next, current);
                         pathToDest = buildPathWithRelaxedConstraints(current, dest);
                     }
 
@@ -407,14 +413,15 @@ public class DeliveryPlannerService {
             return null;
         }
 
-        logger.debug("Building path from ({}, {}) to ({}, {})",
-                from.getLng(), from.getLat(), to.getLng(), to.getLat());
+        double totalDistance = dist(from, to);
+        logger.debug("Building path from {} to {}, distance={}", from, to, totalDistance);
 
         List<LngLat> path = new ArrayList<>();
         path.add(new LngLat(from.getLng(), from.getLat()));
 
         Position current = new Position(from.getLng(), from.getLat());
         int iterations = 0;
+        int consecutiveBlocked = 0;
 
         while (!isCloseEnough(current, to) && iterations < MAX_PATH_ITERATIONS) {
             iterations++;
@@ -422,36 +429,63 @@ public class DeliveryPlannerService {
             double targetAngle = calculateAngle(current, to);
             Position nextDirect = moveInDirection(current, targetAngle);
 
+            double distanceToTarget = dist(current, to);
+            if (distanceToTarget < STEP * 5 && iterations % 50 == 0) {
+                logger.debug("Getting close to target: distance={}, iteration={}",
+                        distanceToTarget, iterations);
+            }
+
             if (!pathSegmentCrossesRestriction(current, nextDirect)) {
                 current = nextDirect;
                 path.add(new LngLat(current.getLng(), current.getLat()));
+                consecutiveBlocked = 0;
             } else {
+                logger.trace("Direct path blocked at iteration {}, trying alternatives", iterations);
+
                 Position nextPos = findAlternativeMove(current, to, targetAngle);
 
                 if (nextPos == null) {
-                    logger.warn("No alternative move at iteration {}", iterations);
+                    logger.warn("No alternative move found at iteration {} (distance to target: {})",
+                            iterations, distanceToTarget);
+
+                    if (distanceToTarget < CLOSE_THRESHOLD * 1.5) {
+                        logger.debug("Close enough to target, accepting current position");
+                        break;
+                    }
+
                     return null;
                 }
 
                 current = nextPos;
                 path.add(new LngLat(current.getLng(), current.getLat()));
+                consecutiveBlocked++;
+
+                if (consecutiveBlocked > 30) {
+                    logger.warn("Blocked {} consecutive times, may be stuck", consecutiveBlocked);
+                }
             }
 
-            if (iterations % 1000 == 0) {
-                logger.debug("Pathfinding iteration {}, distance remaining: {}",
-                        iterations, dist(current, to));
+            if (iterations % 2000 == 0) {
+                logger.debug("Pathfinding iteration {}, distance remaining: {}, consecutive blocked: {}",
+                        iterations, dist(current, to), consecutiveBlocked);
             }
         }
 
-        logger.debug("Path built with {} steps, hovering at ({}, {}) which is within {} of target ({}, {})",
-                path.size(), current.getLng(), current.getLat(),
-                dist(current, to), to.getLng(), to.getLat());
+        if (iterations >= MAX_PATH_ITERATIONS) {
+            logger.warn("Exceeded max iterations building path from {} to {}", from, to);
+            return null;
+        }
+
+        double finalDistance = dist(current, to);
+        logger.debug("Path built with {} steps, final position {}, distance to target: {}",
+                path.size(), current, finalDistance);
 
         return path;
     }
 
     private List<LngLat> buildPathWithRelaxedConstraints(Position from, Position to) {
-        logger.debug("Trying relaxed pathfinding");
+        logger.info("Trying RELAXED pathfinding from {} to {} (distance={})",
+                from, to, dist(from, to));
 
         List<LngLat> path = new ArrayList<>();
         path.add(new LngLat(from.getLng(), from.getLat()));
@@ -460,6 +494,7 @@ public class DeliveryPlannerService {
         int iterations = 0;
         int stuckCounter = 0;
         double lastDistance = dist(current, to);
+        double bestDistance = lastDistance;
 
         while (!isCloseEnough(current, to) && iterations < MAX_PATH_ITERATIONS) {
             iterations++;
@@ -472,11 +507,22 @@ public class DeliveryPlannerService {
                 path.add(new LngLat(current.getLng(), current.getLat()));
                 stuckCounter = 0;
                 lastDistance = dist(current, to);
+
+                if (lastDistance < bestDistance) {
+                    bestDistance = lastDistance;
+                }
             } else {
                 Position nextPos = findAlternativeMoveRelaxed(current, to, targetAngle, stuckCounter);
 
                 if (nextPos == null) {
-                    logger.warn("No alternative move in relaxed mode at iteration {}", iterations);
+                    logger.warn("No alternative move in relaxed mode at iteration {} (stuck={}, dist={})",
+                            iterations, stuckCounter, dist(current, to));
+
+                    if (dist(current, to) < CLOSE_THRESHOLD * 2) {
+                        logger.info("Relaxed: Close enough to target, accepting position");
+                        break;
+                    }
+
                     return null;
                 }
 
@@ -484,68 +530,47 @@ public class DeliveryPlannerService {
                 path.add(new LngLat(current.getLng(), current.getLat()));
 
                 double currentDistance = dist(current, to);
-                if (currentDistance >= lastDistance) {
+                if (currentDistance >= lastDistance - EPS) {
                     stuckCounter++;
                 } else {
                     stuckCounter = Math.max(0, stuckCounter - 1);
+                    if (currentDistance < bestDistance) {
+                        bestDistance = currentDistance;
+                    }
                 }
                 lastDistance = currentDistance;
 
-                if (stuckCounter > 50) {
-                    logger.warn("Stuck for {} iterations, abandoning", stuckCounter);
+                if (stuckCounter > 100) {
+                    logger.warn("Stuck for {} iterations (dist={}, best={}), abandoning",
+                            stuckCounter, currentDistance, bestDistance);
                     return null;
                 }
             }
+
+            if (iterations % 1000 == 0) {
+                logger.debug("Relaxed iteration {}, distance: {}, best: {}, stuck: {}",
+                        iterations, dist(current, to), bestDistance, stuckCounter);
+            }
         }
 
-        logger.debug("Relaxed pathfinding succeeded with {} steps, hovering at ({}, {}) which is within {} of target ({}, {})",
-                path.size(), current.getLng(), current.getLat(),
-                dist(current, to), to.getLng(), to.getLat());
+        if (iterations >= MAX_PATH_ITERATIONS) {
+            logger.warn("Relaxed pathfinding exceeded max iterations");
+            return null;
+        }
+
+        logger.info("Relaxed pathfinding SUCCEEDED with {} steps, final distance: {}",
+                path.size(), dist(current, to));
 
         return path;
     }
 
     private Position findAlternativeMove(Position current, Position target, double targetAngle) {
-        double[] offsets = {-ANGLE_INCREMENT, ANGLE_INCREMENT,
-                -2*ANGLE_INCREMENT, 2*ANGLE_INCREMENT,
-                -3*ANGLE_INCREMENT, 3*ANGLE_INCREMENT,
-                -4*ANGLE_INCREMENT, 4*ANGLE_INCREMENT};
-
-        for (double offset : offsets) {
-            double testAngle = normalizeAngle(targetAngle + offset);
-            Position testPos = moveInDirection(current, testAngle);
-
-            if (!pathSegmentCrossesRestriction(current, testPos)) {
-                double distBefore = dist(current, target);
-                double distAfter = dist(testPos, target);
-
-                if (distAfter <= distBefore * 1.5) {
-                    return testPos;
-                }
-            }
-        }
-
-        for (int i = 0; i < 16; i++) {
-            double testAngle = i * ANGLE_INCREMENT;
-            Position testPos = moveInDirection(current, testAngle);
-
-            if (!pathSegmentCrossesRestriction(current, testPos)) {
-                return testPos;
-            }
-        }
-
-        return null;
-    }
-
-    private Position findAlternativeMoveRelaxed(Position current, Position target,
-                                                double targetAngle, int stuckCounter) {
         double[] offsets = {
                 -ANGLE_INCREMENT, ANGLE_INCREMENT,
                 -2*ANGLE_INCREMENT, 2*ANGLE_INCREMENT,
                 -3*ANGLE_INCREMENT, 3*ANGLE_INCREMENT,
                 -4*ANGLE_INCREMENT, 4*ANGLE_INCREMENT,
-                -5*ANGLE_INCREMENT, 5*ANGLE_INCREMENT,
-                -6*ANGLE_INCREMENT, 6*ANGLE_INCREMENT
+                -5*ANGLE_INCREMENT, 5*ANGLE_INCREMENT
         };
 
         for (double offset : offsets) {
@@ -556,7 +581,54 @@ public class DeliveryPlannerService {
                 double distBefore = dist(current, target);
                 double distAfter = dist(testPos, target);
 
-                double tolerance = stuckCounter > 20 ? 2.0 : 1.5;
+                if (distAfter <= distBefore * 1.8) {
+                    return testPos;
+                }
+            }
+        }
+
+        Position bestPos = null;
+        double bestDist = Double.POSITIVE_INFINITY;
+
+        for (int i = 0; i < 16; i++) {
+            double testAngle = i * ANGLE_INCREMENT;
+            Position testPos = moveInDirection(current, testAngle);
+
+            if (!pathSegmentCrossesRestriction(current, testPos)) {
+                double distToTarget = dist(testPos, target);
+                if (distToTarget < bestDist) {
+                    bestDist = distToTarget;
+                    bestPos = testPos;
+                }
+            }
+        }
+
+        return bestPos;
+    }
+
+    private Position findAlternativeMoveRelaxed(Position current, Position target,
+                                                double targetAngle, int stuckCounter) {
+        double[] offsets = {
+                -ANGLE_INCREMENT, ANGLE_INCREMENT,
+                -2*ANGLE_INCREMENT, 2*ANGLE_INCREMENT,
+                -3*ANGLE_INCREMENT, 3*ANGLE_INCREMENT,
+                -4*ANGLE_INCREMENT, 4*ANGLE_INCREMENT,
+                -5*ANGLE_INCREMENT, 5*ANGLE_INCREMENT,
+                -6*ANGLE_INCREMENT, 6*ANGLE_INCREMENT,
+                -7*ANGLE_INCREMENT, 7*ANGLE_INCREMENT,
+                -8*ANGLE_INCREMENT, 8*ANGLE_INCREMENT
+        };
+
+        double tolerance = stuckCounter > 50 ? 4.0 : (stuckCounter > 30 ? 3.0 : 2.0);
+
+        for (double offset : offsets) {
+            double testAngle = normalizeAngle(targetAngle + offset);
+            Position testPos = moveInDirection(current, testAngle);
+
+            if (!pathSegmentCrossesRestriction(current, testPos)) {
+                double distBefore = dist(current, target);
+                double distAfter = dist(testPos, target);
+
                 if (distAfter <= distBefore * tolerance) {
                     return testPos;
                 }
@@ -588,6 +660,47 @@ public class DeliveryPlannerService {
         }
 
         return best;
+    }
+
+    private void diagnoseDeliveryFailure(MedDispatchRec dispatch, Position currentPos) {
+        logger.info("=== DIAGNOSING DELIVERY FAILURE FOR ID {} ===", dispatch.getId());
+
+        Position target = dispatch.getDelivery();
+        logger.info("Target position: {}", target);
+        logger.info("Current position: {}", currentPos);
+        logger.info("Distance to target: {}", dist(currentPos, target));
+
+        boolean targetInRestricted = restrictedAreaService.isInRestrictedArea(target);
+        logger.info("Target in restricted area: {}", targetInRestricted);
+
+        if (targetInRestricted) {
+            logger.error("⚠️ DELIVERY POINT IS INSIDE RESTRICTED AREA - CANNOT BE COMPLETED");
+            String areaName = restrictedAreaService.getRestrictedAreaNameForPath(target, target);
+            logger.error("Restricted area: {}", areaName);
+        }
+
+        boolean pathBlocked = restrictedAreaService.pathCrossesRestrictedArea(currentPos, target);
+        logger.info("Direct path blocked: {}", pathBlocked);
+
+        if (pathBlocked) {
+            String areaName = restrictedAreaService.getRestrictedAreaNameForPath(currentPos, target);
+            logger.info("Blocked by restricted area: {}", areaName);
+        }
+
+        double targetAngle = calculateAngle(currentPos, target);
+        logger.info("Target angle: {} degrees", targetAngle);
+
+        for (int i = 1; i <= 5; i++) {
+            Position testPos = currentPos;
+            for (int j = 0; j < i; j++) {
+                testPos = moveInDirection(testPos, targetAngle);
+            }
+            boolean stepBlocked = restrictedAreaService.pathCrossesRestrictedArea(currentPos, testPos);
+            logger.info("After {} steps towards target: blocked={}, pos={}, dist to target={}",
+                    i, stepBlocked, testPos, dist(testPos, target));
+        }
+
+        logger.info("=== END DIAGNOSIS ===");
     }
 
     private boolean pathSegmentCrossesRestriction(Position from, Position to) {
